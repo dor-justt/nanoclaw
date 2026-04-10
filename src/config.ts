@@ -72,8 +72,11 @@ export function buildTriggerPattern(trigger: string): RegExp {
     .split('|')
     .map((t) => escapeRegex(t.trim()))
     .filter(Boolean);
+  const boundary = '(?=[\\s\\W]|$)';
   const pattern =
-    parts.length > 1 ? `^(?:${parts.join('|')})\\b` : `^${parts[0]}\\b`;
+    parts.length > 1
+      ? `^(?:${parts.join('|')})${boundary}`
+      : `^${parts[0]}${boundary}`;
   return new RegExp(pattern, 'i');
 }
 

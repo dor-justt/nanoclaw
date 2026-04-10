@@ -8,6 +8,7 @@ import {
   DisconnectReason,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
+  normalizeMessageContent,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 import type {
@@ -46,6 +47,7 @@ import {
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
+import { registerChannel, ChannelOpts } from './registry.js';
 
 const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -241,86 +243,108 @@ export class WhatsAppChannel implements Channel {
 
     this.sock.ev.on('messages.upsert', async ({ messages }) => {
       for (const msg of messages) {
-        if (!msg.message) continue;
-        const rawJid = msg.key.remoteJid;
-        if (!rawJid || rawJid === 'status@broadcast') continue;
+        try {
+          if (!msg.message) continue;
+          // Unwrap container types (viewOnceMessageV2, ephemeralMessage,
+          // editedMessage, etc.) so that conversation, extendedTextMessage,
+          // imageMessage, etc. are accessible at the top level.
+          const normalized = normalizeMessageContent(msg.message);
+          if (!normalized) continue;
+          const rawJid = msg.key.remoteJid;
+          if (!rawJid || rawJid === 'status@broadcast') continue;
 
-        // Translate LID JID to phone JID if applicable.
-        // Prefer senderPn from the message key (available in newer WA protocol)
-        // since translateJid may fail to resolve LID→phone via signalRepository.
-        let chatJid = await this.translateJid(rawJid);
-        if (chatJid.endsWith('@lid') && (msg.key as any).senderPn) {
-          const pn = (msg.key as any).senderPn as string;
-          const phoneJid = pn.includes('@') ? pn : `${pn}@s.whatsapp.net`;
-          this.setLidPhoneMapping(
-            rawJid.split('@')[0].split(':')[0],
-            phoneJid,
-          );
-          chatJid = phoneJid;
-          logger.info(
-            { lidJid: rawJid, phoneJid },
-            'Translated LID via senderPn',
-          );
-        }
-
-        const timestamp = new Date(
-          Number(msg.messageTimestamp) * 1000,
-        ).toISOString();
-
-        // Always notify about chat metadata for group discovery
-        const isGroup = chatJid.endsWith('@g.us');
-        this.opts.onChatMetadata(
-          chatJid,
-          timestamp,
-          undefined,
-          'whatsapp',
-          isGroup,
-        );
-
-        // Only deliver full message for registered groups
-        const groups = this.opts.registeredGroups();
-        if (groups[chatJid]) {
-          let content =
-            msg.message?.conversation ||
-            msg.message?.extendedTextMessage?.text ||
-            msg.message?.imageMessage?.caption ||
-            msg.message?.videoMessage?.caption ||
-            '';
-
-          // WhatsApp group mentions use the LID in raw text (e.g. "@80355281346633")
-          // instead of the display name. Normalize to @AssistantName for trigger matching.
-          if (this.botLidUser && content.includes(`@${this.botLidUser}`)) {
-            content = content.replace(
-              `@${this.botLidUser}`,
-              `@${ASSISTANT_NAME}`,
+          // Translate LID JID to phone JID if applicable.
+          // Prefer senderPn from the message key (available in newer WA protocol)
+          // since translateJid may fail to resolve LID→phone via signalRepository.
+          let chatJid = await this.translateJid(rawJid);
+          if (chatJid.endsWith('@lid') && (msg.key as any).senderPn) {
+            const pn = (msg.key as any).senderPn as string;
+            const phoneJid = pn.includes('@') ? pn : `${pn}@s.whatsapp.net`;
+            this.setLidPhoneMapping(
+              rawJid.split('@')[0].split(':')[0],
+              phoneJid,
+            );
+            chatJid = phoneJid;
+            logger.info(
+              { lidJid: rawJid, phoneJid },
+              'Translated LID via senderPn',
             );
           }
 
-          // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
-          if (!content) continue;
+          const timestamp = new Date(
+            Number(msg.messageTimestamp) * 1000,
+          ).toISOString();
 
-          const sender = msg.key.participant || msg.key.remoteJid || '';
-          const senderName = msg.pushName || sender.split('@')[0];
-
-          const fromMe = msg.key.fromMe || false;
-          // Detect bot messages: with own number, fromMe is reliable
-          // since only the bot sends from that number.
-          // With shared number, bot messages carry the assistant name prefix
-          // (even in DMs/self-chat) so we check for that.
-          const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
-            ? fromMe
-            : content.startsWith(`${ASSISTANT_NAME}:`);
-
-          this.opts.onMessage(chatJid, {
-            id: msg.key.id || '',
-            chat_jid: chatJid,
-            sender,
-            sender_name: senderName,
-            content,
+          // Always notify about chat metadata for group discovery
+          const isGroup = chatJid.endsWith('@g.us');
+          this.opts.onChatMetadata(
+            chatJid,
             timestamp,
-            is_from_me: fromMe,
-            is_bot_message: isBotMessage,
-          });
+            undefined,
+            'whatsapp',
+            isGroup,
+          );
+
+          // Only deliver full message for registered groups
+          const groups = this.opts.registeredGroups();
+          if (groups[chatJid]) {
+            let content =
+              normalized.conversation ||
+              normalized.extendedTextMessage?.text ||
+              normalized.imageMessage?.caption ||
+              normalized.videoMessage?.caption ||
+              '';
+
+            // WhatsApp group mentions use the LID in raw text (e.g. "@80355281346633")
+            // instead of the display name. Normalize to @AssistantName for trigger matching.
+            if (this.botLidUser && content.includes(`@${this.botLidUser}`)) {
+              content = content.replace(
+                `@${this.botLidUser}`,
+                `@${ASSISTANT_NAME}`,
+              );
+            }
+
+            // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
+            if (!content) continue;
+
+            const sender = msg.key.participant || msg.key.remoteJid || '';
+            const senderName = msg.pushName || sender.split('@')[0];
+
+            const fromMe = msg.key.fromMe || false;
+            // Detect bot messages: with own number, fromMe is reliable
+            // since only the bot sends from that number.
+            // With shared number, bot messages carry the assistant name prefix
+            // (even in DMs/self-chat) so we check for that.
+            const isBotMessage = ASSISTANT_HAS_OWN_NUMBER
+              ? fromMe
+              : content.startsWith(`${ASSISTANT_NAME}:`);
+
+            this.opts.onMessage(chatJid, {
+              id: msg.key.id || '',
+              chat_jid: chatJid,
+              sender,
+              sender_name: senderName,
+              content,
+              timestamp,
+              is_from_me: fromMe,
+              is_bot_message: isBotMessage,
+            });
+          } else if (chatJid !== rawJid) {
+            // LID translation produced a JID that doesn't match any registered group
+            logger.warn(
+              {
+                rawJid,
+                translatedJid: chatJid,
+                registeredJids: Object.keys(groups),
+              },
+              'Message JID not found in registered groups after translation',
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err, remoteJid: msg.key?.remoteJid },
+            'Error processing incoming message',
+          );
         }
       }
     });
@@ -336,7 +360,8 @@ export class WhatsAppChannel implements Channel {
           const chatJid = await this.translateJid(rawChatJid);
           const groups = this.opts.registeredGroups();
           if (!groups[chatJid]) continue;
-          const reactorJid = reaction.key?.participant || reaction.key?.remoteJid || '';
+          const reactorJid =
+            reaction.key?.participant || reaction.key?.remoteJid || '';
           const emoji = reaction.text || '';
           const timestamp = reaction.senderTimestampMs
             ? new Date(Number(reaction.senderTimestampMs)).toISOString()
@@ -356,7 +381,7 @@ export class WhatsAppChannel implements Channel {
               reactor: reactorJid.split('@')[0],
               emoji: emoji || '(removed)',
             },
-            emoji ? 'Reaction added' : 'Reaction removed'
+            emoji ? 'Reaction added' : 'Reaction removed',
           );
         } catch (err) {
           logger.error({ err }, 'Failed to process reaction');
@@ -405,8 +430,13 @@ export class WhatsAppChannel implements Channel {
 
   async sendReaction(
     chatJid: string,
-    messageKey: { id: string; remoteJid: string; fromMe?: boolean; participant?: string },
-    emoji: string
+    messageKey: {
+      id: string;
+      remoteJid: string;
+      fromMe?: boolean;
+      participant?: string;
+    },
+    emoji: string,
   ): Promise<void> {
     if (!this.connected) {
       logger.warn({ chatJid, emoji }, 'Cannot send reaction - not connected');
@@ -422,7 +452,7 @@ export class WhatsAppChannel implements Channel {
           messageId: messageKey.id?.slice(0, 10) + '...',
           emoji: emoji || '(removed)',
         },
-        emoji ? 'Reaction sent' : 'Reaction removed'
+        emoji ? 'Reaction sent' : 'Reaction removed',
       );
     } catch (err) {
       logger.error({ chatJid, emoji, err }, 'Failed to send reaction');
@@ -464,6 +494,10 @@ export class WhatsAppChannel implements Channel {
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to update typing status');
     }
+  }
+
+  async syncGroups(force: boolean): Promise<void> {
+    return this.syncGroupMetadata(force);
   }
 
   /**
@@ -605,3 +639,5 @@ export class WhatsAppChannel implements Channel {
     }
   }
 }
+
+registerChannel('whatsapp', (opts: ChannelOpts) => new WhatsAppChannel(opts));

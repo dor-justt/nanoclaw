@@ -93,6 +93,7 @@ vi.mock('@whiskeysockets/baileys', () => {
       .fn()
       .mockResolvedValue({ version: [2, 3000, 0] }),
     makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
+    normalizeMessageContent: vi.fn((msg: unknown) => msg),
     useMultiFileAuthState: vi.fn().mockResolvedValue({
       state: {
         creds: {},
