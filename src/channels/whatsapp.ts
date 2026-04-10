@@ -26,6 +26,9 @@ const { proto } = createRequire(import.meta.url)('@whiskeysockets/baileys') as {
 import {
   ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
+  DATA_DIR,
+  DEFAULT_TRIGGER,
+  getTriggerPattern,
   STORE_DIR,
 } from '../config.js';
 import {
@@ -285,9 +288,12 @@ export class WhatsAppChannel implements Channel {
             isGroup,
           );
 
-          // Only deliver full message for registered groups
+          // Deliver messages for registered groups, and for unregistered 1:1 DMs
+          // that contain the trigger (enables auto-registration of DM chats).
           const groups = this.opts.registeredGroups();
-          if (groups[chatJid]) {
+          const isRegistered = !!groups[chatJid];
+          const isDM = chatJid.endsWith('@s.whatsapp.net');
+          if (isRegistered || isDM) {
             let content =
               normalized.conversation ||
               normalized.extendedTextMessage?.text ||
@@ -566,6 +572,26 @@ export class WhatsAppChannel implements Channel {
       }
     } catch (err) {
       logger.debug({ err, jid }, 'Failed to resolve LID via signalRepository');
+    }
+
+    // Fall back to persistent LID→phone mapping file (from contacts export)
+    try {
+      const mapPath = path.join(DATA_DIR, 'contacts', 'lid-phone-map.json');
+      if (fs.existsSync(mapPath)) {
+        const map = JSON.parse(fs.readFileSync(mapPath, 'utf-8'));
+        const phone = map[lidUser];
+        if (phone) {
+          const phoneJid = `${phone}@s.whatsapp.net`;
+          this.setLidPhoneMapping(lidUser, phoneJid);
+          logger.info(
+            { lidJid: jid, phoneJid },
+            'Translated LID to phone JID (contacts file)',
+          );
+          return phoneJid;
+        }
+      }
+    } catch (err) {
+      logger.debug({ err, jid }, 'Failed to resolve LID via contacts file');
     }
 
     return jid;

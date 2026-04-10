@@ -86,6 +86,54 @@ let statusTracker: StatusTracker;
 
 const onecli = new OneCLI({ url: ONECLI_URL });
 
+/**
+ * Auto-register a 1:1 WhatsApp DM chat on first trigger.
+ * Creates the registration, group folder, and CLAUDE.md from template.
+ */
+function autoRegisterDM(chatJid: string, contactName: string): RegisteredGroup {
+  const phone = chatJid.split('@')[0];
+  const folderSuffix = contactName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 30) || phone;
+  const folder = `whatsapp_dm_${folderSuffix}`;
+  const trigger = `@Evyatar|@${ASSISTANT_NAME}`;
+  const now = new Date().toISOString();
+
+  const group: RegisteredGroup = {
+    name: contactName || phone,
+    folder,
+    trigger,
+    added_at: now,
+    requiresTrigger: true,
+  };
+
+  setRegisteredGroup(chatJid, group);
+
+  // Create group folder and CLAUDE.md from template
+  const groupDir = resolveGroupFolderPath(folder);
+  const logsDir = path.join(groupDir, 'logs');
+  if (!fs.existsSync(logsDir)) fs.mkdirSync(logsDir, { recursive: true });
+  const claudeMd = path.join(groupDir, 'CLAUDE.md');
+  if (!fs.existsSync(claudeMd)) {
+    const template = path.join(GROUPS_DIR, 'global', 'CLAUDE.md');
+    if (fs.existsSync(template)) fs.copyFileSync(template, claudeMd);
+  }
+
+  // Update in-memory state
+  registeredGroups[chatJid] = group;
+
+  logger.info(
+    { chatJid, folder, contactName },
+    'Auto-registered WhatsApp DM chat',
+  );
+
+  ensureOneCLIAgent(chatJid, group);
+  return group;
+}
+
 function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   if (group.isMain) return;
   const identifier = group.folder.toLowerCase().replace(/_/g, '-');
@@ -742,6 +790,16 @@ async function main(): Promise<void> {
           logger.error({ err, chatJid }, 'Remote control command error'),
         );
         return;
+      }
+
+      // Auto-register 1:1 WhatsApp DMs on first trigger
+      if (
+        !registeredGroups[chatJid] &&
+        chatJid.endsWith('@s.whatsapp.net') &&
+        getTriggerPattern(DEFAULT_TRIGGER).test(msg.content.trim()) &&
+        (msg.is_from_me || isSenderAllowed(chatJid, msg.sender, loadSenderAllowlist()))
+      ) {
+        autoRegisterDM(chatJid, msg.sender_name);
       }
 
       // Sender allowlist drop mode: discard messages from denied senders before storing
