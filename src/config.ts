@@ -68,8 +68,12 @@ function escapeRegex(str: string): string {
 }
 
 export function buildTriggerPattern(trigger: string): RegExp {
-  const parts = trigger.split('|').map((t) => escapeRegex(t.trim())).filter(Boolean);
-  const pattern = parts.length > 1 ? `^(?:${parts.join('|')})\\b` : `^${parts[0]}\\b`;
+  const parts = trigger
+    .split('|')
+    .map((t) => escapeRegex(t.trim()))
+    .filter(Boolean);
+  const pattern =
+    parts.length > 1 ? `^(?:${parts.join('|')})\\b` : `^${parts[0]}\\b`;
   return new RegExp(pattern, 'i');
 }
 

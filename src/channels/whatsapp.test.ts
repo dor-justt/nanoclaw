@@ -24,7 +24,10 @@ vi.mock('../logger.js', () => ({
 vi.mock('../db.js', () => ({
   getLastGroupSync: vi.fn(() => null),
   getMessageContentById: vi.fn(() => undefined),
+  getLatestMessage: vi.fn(() => undefined),
+  getMessageFromMe: vi.fn(() => false),
   setLastGroupSync: vi.fn(),
+  storeReaction: vi.fn(),
   updateChatName: vi.fn(),
 }));
 
@@ -89,7 +92,6 @@ vi.mock('@whiskeysockets/baileys', () => {
     fetchLatestWaWebVersion: vi
       .fn()
       .mockResolvedValue({ version: [2, 3000, 0] }),
-    normalizeMessageContent: vi.fn((content: unknown) => content),
     makeCacheableSignalKeyStore: vi.fn((keys: unknown) => keys),
     useMultiFileAuthState: vi.fn().mockResolvedValue({
       state: {
